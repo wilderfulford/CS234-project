@@ -1,8 +1,9 @@
 import pandas as pd
 import numpy as np
 import scipy.stats as stats
-import re
+from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
+import re
 import random
 
 def preprocess_data(filepath):
@@ -34,6 +35,12 @@ def preprocess_data(filepath):
     df['Ethnicity'] = df['Ethnicity'].apply(lambda x: 1 if x == 'Hispanic or Latino' else 0)
     df['Gender'] = df['Gender'].apply(lambda x: 1 if x == 'male' else 0)
     
+    for column in df.columns:
+        try:
+            median = df[column].median()
+            df[column].fillna(median, inplace=True)
+        except:
+            pass
 
     # Select relevant columns for the feature vector
     columns = [
@@ -226,13 +233,117 @@ def plot_performance(file_path, num_patients, feature_dim, num_actions, alpha, n
 
     # Plot Regret performance
     ax[0].bar(1, avg_regret, yerr=ci_regret, capsize=10)
-    ax[0].set_title("Regret Performance")
+    ax[0].set_title("Linear Bandit Regret Performance")
     ax[0].set_ylabel("Average Regret")
     ax[0].set_xticks([])
 
     # Plot Fraction Incorrect performance
     ax[1].bar(1, avg_fraction_incorrect, yerr=ci_fraction_incorrect, capsize=10)
-    ax[1].set_title("Fraction Incorrect Performance")
+    ax[1].set_title("Linear Bandit Fraction Incorrect Performance")
+    ax[1].set_ylabel("Average Fraction Incorrect")
+    ax[1].set_xticks([])
+
+    plt.show()
+
+
+class OnlineLinearRegression:
+    def __init__(self):
+        self.model = LinearRegression()
+        self.X_data = []
+        self.y_data = []
+        self.is_fitted = False
+
+    def predict(self, patient_features):
+        if not self.is_fitted:
+            return 0
+        
+        ans = self.model.predict([patient_features])[0]
+        return ans
+
+    def update(self, patient_features, true_dose):
+        self.X_data.append(patient_features)
+        self.y_data.append(true_dose)
+        self.model.fit(self.X_data, self.y_data)
+        self.is_fitted = True
+
+
+def simulate_bandit_supervised(file_path, num_patients):
+    generator = patient_generator(file_path)
+    supervised_bandit = OnlineLinearRegression()
+    regret = 0
+    incorrect_dosing_decisions = 0
+    total_reward = 0
+
+    for t in range(num_patients):
+        patient_features, therapeutic_dose = next(generator)
+        predicted_dose = supervised_bandit.predict(patient_features)
+        action = np.round(predicted_dose)  # Round the predicted dose to get the action
+        if action < 21:
+            action = 0
+        elif action <= 49:
+            action = 1
+        else:
+            action = 2
+            
+        if therapeutic_dose < 21:
+            best_action = 0
+        elif therapeutic_dose <= 49:
+            best_action = 1
+        else:
+            best_action = 2
+
+        reward = -1 if action != best_action else 0        
+        total_reward += reward
+        incorrect_dosing_decisions += (reward == -1)
+        regret -= total_reward
+        fraction_incorrect = incorrect_dosing_decisions / (t + 1)
+        supervised_bandit.update(patient_features, therapeutic_dose)
+
+    return regret, fraction_incorrect
+
+
+def run_sup_multiple_times(file_path, num_patients, num_runs=20):
+    regrets = []
+    fractions_incorrect = []
+
+    for _ in range(num_runs):
+
+        regret, fraction_incorrect = simulate_bandit_supervised(file_path, num_patients)
+        regrets.append(regret)
+        fractions_incorrect.append(fraction_incorrect)
+
+    # Calculate average performance
+    avg_regret = np.mean(regrets)
+    avg_fraction_incorrect = np.mean(fractions_incorrect)
+
+    # Calculate 95% confidence intervals
+    t_score = stats.t.ppf(1 - 0.025, num_runs - 1)  # T-distribution
+
+    stderr_regret = stats.sem(regrets)
+    ci_regret = t_score * stderr_regret
+
+    stderr_fraction_incorrect = stats.sem(fractions_incorrect)
+    ci_fraction_incorrect = t_score * stderr_fraction_incorrect
+
+    return (avg_regret, ci_regret), (avg_fraction_incorrect, ci_fraction_incorrect)
+
+
+def plot_sup_performance(file_path, num_patients, num_runs=20):
+    (avg_regret, ci_regret), (avg_fraction_incorrect, ci_fraction_incorrect) = run_sup_multiple_times(
+        file_path, num_patients, num_runs
+    )
+
+    fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+
+    # Plot Regret performance
+    ax[0].bar(1, avg_regret, yerr=ci_regret, capsize=10)
+    ax[0].set_title("Supervised Regret Performance")
+    ax[0].set_ylabel("Average Regret")
+    ax[0].set_xticks([])
+
+    # Plot Fraction Incorrect performance
+    ax[1].bar(1, avg_fraction_incorrect, yerr=ci_fraction_incorrect, capsize=10)
+    ax[1].set_title("Supervised Fraction Incorrect Performance")
     ax[1].set_ylabel("Average Fraction Incorrect")
     ax[1].set_xticks([])
 
@@ -246,7 +357,8 @@ if __name__ == '__main__':
     num_actions = 3  # Low, medium, high
     alpha = 2
     file_path = "data/warfarin.csv"
-    
+
+    plot_sup_performance(file_path, num_patients)
     plot_performance(file_path, num_patients, feature_dim, num_actions, alpha)
 
-    
+
